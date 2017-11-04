@@ -289,8 +289,14 @@ class TestSwift3MultiUpload(Swift3FunctionalTestCase):
         self.assertCommonResponseHeaders(headers)
         self.assertTrue('content-type' in headers)
         self.assertEqual(headers['content-type'], 'application/xml')
-        self.assertTrue('content-length' in headers)
-        self.assertEqual(headers['content-length'], str(len(body)))
+        if 'content-length' in headers:
+            self.assertEqual(headers['content-length'], str(len(body)))
+        else:
+            self.assertIn('transfer-encoding', headers)
+            self.assertEqual(headers['transfer-encoding'], 'chunked')
+        lines = body.split('\n')
+        self.assertTrue(lines[0].startswith('<?xml'), body)
+        self.assertTrue(lines[0].endswith('?>'), body)
         elem = fromstring(body, 'CompleteMultipartUploadResult')
         self.assertEqual('http://localhost:8080/bucket/obj1',
                          elem.find('Location').text)
@@ -304,7 +310,7 @@ class TestSwift3MultiUpload(Swift3FunctionalTestCase):
 
         status, headers, body = \
             self.conn.make_request('HEAD', bucket, key)
-        self.assertEquals(status, 200)
+        self.assertEqual(status, 200)
         self.assertCommonResponseHeaders(headers)
         self.assertTrue('etag' in headers)
         etag = headers['etag']
