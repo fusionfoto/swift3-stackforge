@@ -649,8 +649,8 @@ class UploadController(Controller):
                             headers=headers)
                         if put_resp.status_int == 202:
                             body = []
-                            put_resp.fix_conditional_response()
-                            for chunk in put_resp.response_iter:
+                            for chunk in put_resp(req.environ,
+                                                  lambda *a: None):
                                 if not chunk.strip():
                                     if not yielded_anything:
                                         yield ('<?xml version="1.0" '
