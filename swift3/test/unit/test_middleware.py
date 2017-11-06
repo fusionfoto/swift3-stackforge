@@ -1026,6 +1026,8 @@ class TestSwift3Middleware(Swift3TestCase):
             self.assertEqual(1, mock_req.call_count)
 
     def test_swift3_with_s3_token_and_auth_token(self):
+        if not hasattr(AuthProtocol, '_do_fetch_token'):
+            raise unittest.SkipTest
         self.swift = FakeSwift()
         self.keystone_auth = KeystoneAuth(
             self.swift, {'operator_roles': 'swift-user'})
@@ -1064,6 +1066,8 @@ class TestSwift3Middleware(Swift3TestCase):
                 self.assertEqual(1, mock_fetch.call_count)
 
     def test_swift3_with_s3_token_no_pass_token_to_auth_token(self):
+        if not hasattr(AuthProtocol, '_do_fetch_token'):
+            raise unittest.SkipTest
         self.swift = FakeSwift()
         self.keystone_auth = KeystoneAuth(
             self.swift, {'operator_roles': 'swift-user'})
