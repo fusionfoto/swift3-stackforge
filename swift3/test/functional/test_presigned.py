@@ -213,8 +213,6 @@ class TestSwift3PresignedUrls(Swift3FunctionalTestCase):
         self.assertEqual(status, 204)
 
 
-@unittest.skipIf(os.environ['AUTH'] == 'tempauth',
-                 'v4 is supported only in keystone')
 class TestSwift3PresignedUrlsSigV4(TestSwift3PresignedUrls):
     @classmethod
     def setUpClass(cls):

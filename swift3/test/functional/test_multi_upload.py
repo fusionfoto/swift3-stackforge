@@ -775,8 +775,6 @@ class TestSwift3MultiUpload(Swift3FunctionalTestCase):
         self.assertEqual(headers['content-length'], '0')
 
 
-@unittest.skipIf(os.environ['AUTH'] == 'tempauth',
-                 'v4 is supported only in keystone')
 class TestSwift3MultiUploadSigV4(TestSwift3MultiUpload):
     @classmethod
     def setUpClass(cls):

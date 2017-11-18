@@ -464,8 +464,6 @@ class TestSwift3Bucket(Swift3FunctionalTestCase):
         self.assertEqual(get_error_code(body), 'MethodNotAllowed')
 
 
-@unittest.skipIf(os.environ['AUTH'] == 'tempauth',
-                 'v4 is supported only in keystone')
 class TestSwift3BucketSigV4(TestSwift3Bucket):
     @classmethod
     def setUpClass(cls):

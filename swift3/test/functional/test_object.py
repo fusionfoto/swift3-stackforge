@@ -825,8 +825,6 @@ class TestSwift3Object(Swift3FunctionalTestCase):
         self.assertCommonResponseHeaders(headers)
 
 
-@unittest.skipIf(os.environ['AUTH'] == 'tempauth',
-                 'v4 is supported only in keystone')
 class TestSwift3ObjectSigV4(TestSwift3Object):
     @classmethod
     def setUpClass(cls):

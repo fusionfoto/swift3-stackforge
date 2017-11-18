@@ -126,8 +126,6 @@ class TestSwift3Acl(Swift3FunctionalTestCase):
         self.assertEqual(get_error_code(body), 'AccessDenied')
 
 
-@unittest.skipIf(os.environ['AUTH'] == 'tempauth',
-                 'v4 is supported only in keystone')
 class TestSwift3AclSigV4(TestSwift3Acl):
     @classmethod
     def setUpClass(cls):

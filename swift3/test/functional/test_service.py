@@ -73,8 +73,6 @@ class TestSwift3Service(Swift3FunctionalTestCase):
                       'or x-amz-date header', body)
 
 
-@unittest.skipIf(os.environ['AUTH'] == 'tempauth',
-                 'v4 is supported only in keystone')
 class TestSwift3ServiceSigV4(TestSwift3Service):
     @classmethod
     def setUpClass(cls):

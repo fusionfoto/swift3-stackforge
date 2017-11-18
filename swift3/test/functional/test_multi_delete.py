@@ -220,8 +220,6 @@ class TestSwift3MultiDelete(Swift3FunctionalTestCase):
         self.assertEqual(len(resp_objects), 1)
 
 
-@unittest.skipIf(os.environ['AUTH'] == 'tempauth',
-                 'v4 is supported only in keystone')
 class TestSwift3MultiDeleteSigV4(TestSwift3MultiDelete):
     @classmethod
     def setUpClass(cls):
