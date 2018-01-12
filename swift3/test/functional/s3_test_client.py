@@ -71,7 +71,7 @@ class Connection(object):
                         for upload in bucket.list_multipart_uploads():
                             upload.cancel_upload()
 
-                        for obj in bucket.list():
+                        for obj in reversed([x for x in bucket.list()]):
                             bucket.delete_key(obj.name)
 
                         self.conn.delete_bucket(bucket.name)
