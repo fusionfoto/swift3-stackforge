@@ -14,7 +14,7 @@
 # limitations under the License.
 
 import base64
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from email.header import Header
 from hashlib import sha1, sha256, md5
 import hmac
@@ -24,7 +24,7 @@ import six
 from six.moves.urllib.parse import quote, unquote, parse_qsl
 import string
 
-from swift.common.utils import split_path
+from swift.common.utils import split_path, json
 from swift.common import swob
 from swift.common.http import HTTP_OK, HTTP_CREATED, HTTP_ACCEPTED, \
     HTTP_NO_CONTENT, HTTP_UNAUTHORIZED, HTTP_FORBIDDEN, HTTP_NOT_FOUND, \
@@ -44,11 +44,12 @@ from swift3.controllers import ServiceController, BucketController, \
     UnsupportedController, S3AclController
 from swift3.response import AccessDenied, InvalidArgument, InvalidDigest, \
     RequestTimeTooSkewed, Response, SignatureDoesNotMatch, \
-    BucketAlreadyExists, BucketNotEmpty, EntityTooLarge, \
+    BucketAlreadyOwnedByYou, BucketNotEmpty, EntityTooLarge, \
     InternalError, NoSuchBucket, NoSuchKey, PreconditionFailed, InvalidRange, \
     MissingContentLength, InvalidStorageClass, S3NotImplemented, InvalidURI, \
     MalformedXML, InvalidRequest, RequestTimeout, InvalidBucketName, \
-    BadDigest, AuthorizationHeaderMalformed, AuthorizationQueryParametersError
+    BadDigest, AuthorizationHeaderMalformed, \
+    AuthorizationQueryParametersError, BucketAlreadyExists
 from swift3.exception import NotS3Request, BadSwiftRequest
 from swift3.utils import utf8encode, LOGGER, check_path_header, S3Timestamp, \
     mktime, MULTIUPLOAD_SUFFIX
@@ -116,7 +117,7 @@ class SigV4Mixin(object):
     def check_signature(self, secret):
         user_signature = self.signature
         derived_secret = 'AWS4' + secret
-        for scope_piece in self.scope:
+        for scope_piece in self.scope.values():
             derived_secret = hmac.new(
                 derived_secret, scope_piece, sha256).digest()
         valid_signature = hmac.new(
@@ -174,6 +175,8 @@ class SigV4Mixin(object):
         err = None
         try:
             expires = int(self.params['X-Amz-Expires'])
+        except KeyError:
+            raise AccessDenied()
         except ValueError:
             err = 'X-Amz-Expires should be a number'
         else:
@@ -191,6 +194,15 @@ class SigV4Mixin(object):
         if int(self.timestamp) + expires < S3Timestamp.now():
             raise AccessDenied('Request has expired')
 
+    def _parse_credential(self, credential_string):
+        parts = credential_string.split("/")
+        # credential must be in following format:
+        # <access-key-id>/<date>/<AWS-region>/<AWS-service>/aws4_request
+        if not parts[0] or len(parts) != 5:
+            raise AccessDenied()
+        return dict(zip(['access', 'date', 'region', 'service', 'terminal'],
+                        parts))
+
     def _parse_query_authentication(self):
         """
         Parse v4 query authentication
@@ -203,10 +215,11 @@ class SigV4Mixin(object):
             raise InvalidArgument('X-Amz-Algorithm',
                                   self.params.get('X-Amz-Algorithm'))
         try:
-            cred_param = self.params['X-Amz-Credential'].split("/")
-            access = cred_param[0]
+            cred_param = self._parse_credential(
+                self.params['X-Amz-Credential'])
             sig = self.params['X-Amz-Signature']
-            expires = self.params['X-Amz-Expires']
+            if not sig:
+                raise AccessDenied()
         except KeyError:
             raise AccessDenied()
 
@@ -218,12 +231,26 @@ class SigV4Mixin(object):
 
         self._signed_headers = set(signed_headers.split(';'))
 
-        # credential must be in following format:
-        # <access-key-id>/<date>/<AWS-region>/<AWS-service>/aws4_request
-        if not all([access, sig, len(cred_param) == 5, expires]):
-            raise AccessDenied()
+        invalid_messages = {
+            'date': 'Invalid credential date "%s". This date is not the same '
+                    'as X-Amz-Date: "%s".',
+            'region': "Error parsing the X-Amz-Credential parameter; "
+                    "the region '%s' is wrong; expecting '%s'",
+            'service': 'Error parsing the X-Amz-Credential parameter; '
+                    'incorrect service "%s". This endpoint belongs to "%s".',
+            'terminal': 'Error parsing the X-Amz-Credential parameter; '
+                    'incorrect terminal "%s". This endpoint uses "%s".',
+        }
+        for key in ('date', 'region', 'service', 'terminal'):
+            if cred_param[key] != self.scope[key]:
+                kwargs = {}
+                if key == 'region':
+                    kwargs = {'region': self.scope['region']}
+                raise AuthorizationQueryParametersError(
+                    invalid_messages[key] % (cred_param[key], self.scope[key]),
+                    **kwargs)
 
-        return access, sig
+        return cred_param['access'], sig
 
     def _parse_header_authentication(self):
         """
@@ -235,23 +262,39 @@ class SigV4Mixin(object):
         """
 
         auth_str = self.headers['Authorization']
-        cred_param = auth_str.partition(
-            "Credential=")[2].split(',')[0].split("/")
-        access = cred_param[0]
+        cred_param = self._parse_credential(auth_str.partition(
+            "Credential=")[2].split(',')[0])
         sig = auth_str.partition("Signature=")[2].split(',')[0]
+        if not sig:
+            raise AccessDenied()
         signed_headers = auth_str.partition(
             "SignedHeaders=")[2].split(',', 1)[0]
-        # credential must be in following format:
-        # <access-key-id>/<date>/<AWS-region>/<AWS-service>/aws4_request
-        if not all([access, sig, len(cred_param) == 5]):
-            raise AccessDenied()
         if not signed_headers:
             # TODO: make sure if is it Malformed?
             raise AuthorizationHeaderMalformed()
 
+        invalid_messages = {
+            'date': 'Invalid credential date "%s". This date is not the same '
+                    'as X-Amz-Date: "%s".',
+            'region': "The authorization header is malformed; the region '%s' "
+                    "is wrong; expecting '%s'",
+            'service': 'The authorization header is malformed; incorrect '
+                    'service "%s". This endpoint belongs to "%s".',
+            'terminal': 'The authorization header is malformed; incorrect '
+                    'terminal "%s". This endpoint uses "%s".',
+        }
+        for key in ('date', 'region', 'service', 'terminal'):
+            if cred_param[key] != self.scope[key]:
+                kwargs = {}
+                if key == 'region':
+                    kwargs = {'region': self.scope['region']}
+                raise AuthorizationHeaderMalformed(
+                    invalid_messages[key] % (cred_param[key], self.scope[key]),
+                    **kwargs)
+
         self._signed_headers = set(signed_headers.split(';'))
 
-        return access, sig
+        return cred_param['access'], sig
 
     def _canonical_query_string(self):
         return '&'.join(
@@ -361,8 +404,12 @@ class SigV4Mixin(object):
 
     @property
     def scope(self):
-        return [self.timestamp.amz_date_format.split('T')[0],
-                CONF.location, SERVICE, 'aws4_request']
+        return OrderedDict([
+            ('date', self.timestamp.amz_date_format.split('T')[0]),
+            ('region', CONF.location),
+            ('service', SERVICE),
+            ('terminal', 'aws4_request'),
+        ])
 
     def _string_to_sign(self):
         """
@@ -370,8 +417,18 @@ class SigV4Mixin(object):
         """
         return '\n'.join(['AWS4-HMAC-SHA256',
                           self.timestamp.amz_date_format,
-                          '/'.join(self.scope),
+                          '/'.join(self.scope.values()),
                           sha256(self._canonical_request()).hexdigest()])
+
+    def signature_does_not_match_kwargs(self):
+        kwargs = super(SigV4Mixin, self).signature_does_not_match_kwargs()
+        cr = self._canonical_request()
+        kwargs.update({
+            'canonical_request': cr,
+            'canonical_request_bytes': ' '.join(
+                format(ord(c), '02x') for c in cr),
+        })
+        return kwargs
 
 
 def get_request_class(env):
@@ -565,8 +622,10 @@ class Request(swob.Request):
         :raises: NotS3Request
         """
         if self._is_query_auth:
+            self._validate_expire_param()
             return self._parse_query_authentication()
         elif self._is_header_auth:
+            self._validate_dates()
             return self._parse_header_authentication()
         else:
             # if this request is neither query auth nor header auth
@@ -581,7 +640,7 @@ class Request(swob.Request):
         # Expires header is a float since epoch
         try:
             ex = S3Timestamp(float(self.params['Expires']))
-        except ValueError:
+        except (KeyError, ValueError):
             raise AccessDenied()
 
         if S3Timestamp.now() > ex:
@@ -599,7 +658,6 @@ class Request(swob.Request):
         :raises: RequestTimeTooSkewed
         """
         if self._is_query_auth:
-            self._validate_expire_param()
             # TODO: make sure the case if timestamp param in query
             return
 
@@ -629,8 +687,6 @@ class Request(swob.Request):
             except (ValueError, TypeError):
                 raise InvalidArgument('Content-Length',
                                       self.environ['CONTENT_LENGTH'])
-
-        self._validate_dates()
 
         value = _header_strip(self.headers.get('Content-MD5'))
         if value is not None:
@@ -854,6 +910,15 @@ class Request(swob.Request):
             buf.append(path)
         return '\n'.join(buf)
 
+    def signature_does_not_match_kwargs(self):
+        return {
+            'a_w_s_access_key_id': self.access_key,
+            'string_to_sign': self.string_to_sign,
+            'signature_provided': self.signature,
+            'string_to_sign_bytes': ' '.join(
+                format(ord(c), '02x') for c in self.string_to_sign),
+        }
+
     @property
     def controller_name(self):
         return self.controller.__name__[:-len('Controller')]
@@ -971,6 +1036,22 @@ class Request(swob.Request):
             env['HTTP_X_COPY_FROM'] = env['HTTP_X_AMZ_COPY_SOURCE']
             del env['HTTP_X_AMZ_COPY_SOURCE']
             env['CONTENT_LENGTH'] = '0'
+            # Content type cannot be modified on COPY
+            env.pop('CONTENT_TYPE', None)
+            if env.pop('HTTP_X_AMZ_METADATA_DIRECTIVE', None) == 'REPLACE':
+                env['HTTP_X_FRESH_METADATA'] = 'True'
+            else:
+                copy_exclude_headers = ('HTTP_CONTENT_DISPOSITION',
+                                        'HTTP_CONTENT_ENCODING',
+                                        'HTTP_CONTENT_LANGUAGE',
+                                        'HTTP_EXPIRES',
+                                        'HTTP_CACHE_CONTROL',
+                                        'HTTP_X_ROBOTS_TAG')
+                for key in copy_exclude_headers:
+                    env.pop(key, None)
+                for key in list(env.keys()):
+                    if key.startswith('HTTP_X_OBJECT_META_'):
+                        del env[key]
 
         if CONF.force_swift_request_proxy_log:
             env['swift.proxy_access_log_made'] = False
@@ -1048,6 +1129,7 @@ class Request(swob.Request):
                 ],
                 'PUT': [
                     HTTP_CREATED,
+                    HTTP_ACCEPTED,  # For SLO with heartbeating
                 ],
                 'POST': [
                     HTTP_ACCEPTED,
@@ -1059,6 +1141,15 @@ class Request(swob.Request):
             }
 
         return code_map[method]
+
+    def _bucket_put_accepted_error(self, container, app):
+        sw_req = self.to_swift_req('HEAD', container, None)
+        info = get_container_info(sw_req.environ, app)
+        acl = json.loads(info.get('sysmeta', {}).get('swift3-acl', '{}'))
+        owner = acl.get('Owner')
+        if owner is None or owner == self.user_id:
+            raise BucketAlreadyOwnedByYou(container)
+        raise BucketAlreadyExists(container)
 
     def _swift_error_codes(self, method, container, obj, env, app):
         """
@@ -1081,7 +1172,9 @@ class Request(swob.Request):
                     HTTP_NOT_FOUND: (NoSuchBucket, container),
                 },
                 'PUT': {
-                    HTTP_ACCEPTED: (BucketAlreadyExists, container),
+                    HTTP_ACCEPTED: (self._bucket_put_accepted_error, container,
+                                    app),
+                    HTTP_FORBIDDEN: (BucketAlreadyExists, container),
                 },
                 'POST': {
                     HTTP_NOT_FOUND: (NoSuchBucket, container),
@@ -1191,7 +1284,8 @@ class Request(swob.Request):
         if status == HTTP_BAD_REQUEST:
             raise BadSwiftRequest(err_msg)
         if status == HTTP_UNAUTHORIZED:
-            raise SignatureDoesNotMatch()
+            raise SignatureDoesNotMatch(
+                **self.signature_does_not_match_kwargs())
         if status == HTTP_FORBIDDEN:
             raise AccessDenied()
 
@@ -1301,7 +1395,8 @@ class S3AclRequest(Request):
         sw_resp = sw_req.get_response(app)
 
         if not sw_req.remote_user:
-            raise SignatureDoesNotMatch()
+            raise SignatureDoesNotMatch(
+                **self.signature_does_not_match_kwargs())
 
         _, self.account, _ = split_path(sw_resp.environ['PATH_INFO'],
                                         2, 3, True)

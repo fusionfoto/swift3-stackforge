@@ -42,12 +42,13 @@ upload information:
    Static Large Object.
 """
 
+from hashlib import md5
 import os
 import re
 import sys
 
 from swift.common.swob import Range
-from swift.common.utils import json, public
+from swift.common.utils import json, public, reiterate
 from swift.common.db import utf8encode
 
 from six.moves.urllib.parse import urlparse  # pylint: disable=F0401
@@ -57,7 +58,7 @@ from swift3.controllers.base import Controller, bucket_operation, \
 from swift3.response import InvalidArgument, ErrorResponse, MalformedXML, \
     InvalidPart, BucketAlreadyExists, EntityTooSmall, InvalidPartOrder, \
     InvalidRequest, HTTPOk, HTTPNoContent, NoSuchKey, NoSuchUpload, \
-    NoSuchBucket
+    NoSuchBucket, BucketAlreadyOwnedByYou
 from swift3.exception import BadSwiftRequest
 from swift3.utils import LOGGER, unique_id, MULTIUPLOAD_SUFFIX, S3Timestamp, \
     sysmeta_header
@@ -346,7 +347,7 @@ class UploadsController(Controller):
 
         try:
             req.get_response(self.app, 'PUT', container, '')
-        except BucketAlreadyExists:
+        except (BucketAlreadyExists, BucketAlreadyOwnedByYou):
             pass
 
         obj = '%s/%s' % (req.object_name, upload_id)
@@ -517,7 +518,7 @@ class UploadController(Controller):
         """
         upload_id = req.params['uploadId']
         resp = _get_upload_info(req, self.app, upload_id)
-        headers = {}
+        headers = {'Accept': 'application/json'}
         for key, val in resp.headers.iteritems():
             _key = key.lower()
             if _key.startswith('x-amz-meta-'):
@@ -554,6 +555,7 @@ class UploadController(Controller):
                           'etag': o['hash'],
                           'size_bytes': o['bytes']}) for o in objinfo)
 
+        s3_etag_hasher = md5()
         manifest = []
         previous_number = 0
         try:
@@ -580,6 +582,7 @@ class UploadController(Controller):
                     raise InvalidPart(upload_id=upload_id,
                                       part_number=part_number)
 
+                s3_etag_hasher.update(etag.decode('hex'))
                 info['size_bytes'] = int(info['size_bytes'])
                 manifest.append(info)
         except (XMLSyntaxError, DocumentInvalid):
@@ -590,6 +593,8 @@ class UploadController(Controller):
             exc_type, exc_value, exc_traceback = sys.exc_info()
             LOGGER.error(e)
             raise exc_type, exc_value, exc_traceback
+
+        s3_etag = '%s-%d' % (s3_etag_hasher.hexdigest(), len(manifest))
 
         # Following swift commit 7f636a5, zero-byte segments aren't allowed,
         # even as the final segment
@@ -605,67 +610,130 @@ class UploadController(Controller):
 
         # Check the size of each segment except the last and make sure they are
         # all more than the minimum upload chunk size
-        for info in manifest[:-1]:
-            if info['size_bytes'] < CONF.min_segment_size:
+        swift_etag_hasher = md5()
+        last_size = None
+        for info in manifest:
+            swift_etag_hasher.update(info['etag'])
+            if last_size and last_size < CONF.min_segment_size:
                 raise EntityTooSmall()
+            last_size = info['size_bytes']
 
-        try:
-            # TODO: add support for versioning
-            if manifest:
-                resp = req.get_response(self.app, 'PUT',
-                                        body=json.dumps(manifest),
-                                        query={'multipart-manifest': 'put'},
-                                        headers=headers)
-            else:
-                # the upload must have consisted of a single zero-length part
-                # just write it directly
-                resp = req.get_response(self.app, 'PUT', body='',
-                                        headers=headers)
-        except BadSwiftRequest as e:
-            msg = str(e)
-            expected_msg = 'too small; each segment must be at least 1 byte'
-            if expected_msg in msg:
-                # FIXME: AWS S3 allows a smaller object than 5 MB if there is
-                # only one part.  Use a COPY request to copy the part object
-                # from the segments container instead.
-                raise EntityTooSmall(msg)
-            else:
-                raise
+        headers[sysmeta_header('object', 'etag')] = s3_etag
+        c_etag = '"%s"; s3_etag="%s"' % (
+            swift_etag_hasher.hexdigest(), s3_etag)
+        headers['X-Object-Sysmeta-Container-Update-Override-Etag'] = c_etag
+        # Include X-Backend-* for backwards compatibility with pre-2.9.0 Swift.
+        # Note that this will only work for replicated policies, and even then
+        # it will be subject to the POST-update problem described in
+        # https://bugs.launchpad.net/swift/+bug/1582723
+        headers['X-Backend-Container-Update-Override-Etag'] = c_etag
 
-        if empty_seg:
-            # clean up the zero-byte segment
-            _, empty_seg_cont, empty_seg_name = empty_seg['path'].split('/', 2)
-            req.get_response(self.app, 'DELETE',
-                             container=empty_seg_cont, obj=empty_seg_name)
+        def response_iter():
+            # NB: XML requires that the XML declaration, if present, be at the
+            # very start of the document. Clients *will* call us out on not
+            # being valid XML if we pass through whitespace before it.
+            # Track whether we've sent anything yet so we can yield out that
+            # declaration *first*
+            yielded_anything = False
 
-        # clean up the multipart-upload record
-        obj = '%s/%s' % (req.object_name, upload_id)
-        try:
-            req.get_response(self.app, 'DELETE', container, obj)
-        except NoSuchKey:
-            pass  # We know that this existed long enough for us to HEAD
+            try:
+                try:
+                    # TODO: add support for versioning
+                    if manifest:
+                        put_resp = req.get_response(
+                            self.app, 'PUT', body=json.dumps(manifest),
+                            query={'multipart-manifest': 'put',
+                                   'heartbeat': 'on'},
+                            headers=headers)
+                        if put_resp.status_int == 202:
+                            body = []
+                            put_resp.fix_conditional_response()
+                            for chunk in put_resp.response_iter:
+                                if not chunk.strip():
+                                    if not yielded_anything:
+                                        yield ('<?xml version="1.0" '
+                                               'encoding="UTF-8"?>\n')
+                                    yielded_anything = True
+                                    yield chunk
+                                body.append(chunk)
+                            body = json.loads(''.join(body))
+                            if body['Response Status'] != '201 Created':
+                                raise InvalidRequest(
+                                    status=body['Response Status'],
+                                    msg='\n'.join(': '.join(err)
+                                                  for err in body['Errors']))
+                    else:
+                        # the upload must have consisted of a single
+                        # zero-length part -- just write it directly
+                        put_resp = req.get_response(self.app, 'PUT', body='',
+                                                    headers=headers)
+                except BadSwiftRequest as e:
+                    msg = str(e)
+                    expected_msg = ('too small; each segment must be '
+                                    'at least 1 byte')
+                    if expected_msg in msg:
+                        # FIXME: AWS S3 allows a smaller object than 5 MB if
+                        # there is only one part.  Use a COPY request to copy
+                        # the part object from the segments container instead.
+                        raise EntityTooSmall(msg)
+                    else:
+                        raise
 
-        result_elem = Element('CompleteMultipartUploadResult')
+                if empty_seg:
+                    # clean up the zero-byte segment
+                    _, empty_seg_cont, empty_seg_name = \
+                        empty_seg['path'].split('/', 2)
+                    try:
+                        req.get_response(self.app, 'DELETE',
+                                         container=empty_seg_cont,
+                                         obj=empty_seg_name)
+                    except NoSuchKey:
+                        # We know that this existed long enough to appear
+                        # in container listings
+                        pass
 
-        # NOTE: boto with sig v4 appends port to HTTP_HOST value at the
-        # request header when the port is non default value and it makes
-        # req.host_url like as http://localhost:8080:8080/path
-        # that obviously invalid. Probably it should be resolved at
-        # swift.common.swob though, tentatively we are parsing and
-        # reconstructing the correct host_url info here.
-        # in detail, https://github.com/boto/boto/pull/3513
-        parsed_url = urlparse(req.host_url)
-        host_url = '%s://%s' % (parsed_url.scheme, parsed_url.hostname)
-        if parsed_url.port:
-            host_url += ':%s' % parsed_url.port
+                # clean up the multipart-upload record
+                obj = '%s/%s' % (req.object_name, upload_id)
+                try:
+                    req.get_response(self.app, 'DELETE', container, obj)
+                except NoSuchKey:
+                    # We know that this existed long enough for us to HEAD
+                    pass
 
-        SubElement(result_elem, 'Location').text = host_url + req.path
-        SubElement(result_elem, 'Bucket').text = req.container_name
-        SubElement(result_elem, 'Key').text = req.object_name
-        SubElement(result_elem, 'ETag').text = resp.etag
+                result_elem = Element('CompleteMultipartUploadResult')
 
-        resp.body = tostring(result_elem)
-        resp.status = 200
+                # NOTE: boto with sig v4 appends port to HTTP_HOST value at the
+                # request header when the port is non default value and it
+                # makes req.host_url like as http://localhost:8080:8080/path
+                # that obviously invalid. Probably it should be resolved at
+                # swift.common.swob though, tentatively we are parsing and
+                # reconstructing the correct host_url info here.
+                # in detail, https://github.com/boto/boto/pull/3513
+                parsed_url = urlparse(req.host_url)
+                host_url = '%s://%s' % (parsed_url.scheme, parsed_url.hostname)
+                if parsed_url.port:
+                    host_url += ':%s' % parsed_url.port
+
+                SubElement(result_elem, 'Location').text = host_url + req.path
+                SubElement(result_elem, 'Bucket').text = req.container_name
+                SubElement(result_elem, 'Key').text = req.object_name
+                SubElement(result_elem, 'ETag').text = '"%s"' % s3_etag
+                if yielded_anything:
+                    yield '\n'
+                yield tostring(result_elem,
+                               xml_declaration=not yielded_anything)
+            except ErrorResponse as err_resp:
+                if yielded_anything:
+                    err_resp.xml_declaration = False
+                    yield '\n'
+                else:
+                    # Oh good, we can still change HTTP status code, too!
+                    resp.status = err_resp.status
+                for chunk in err_resp({}, lambda *a: None):
+                    yield chunk
+
+        resp = HTTPOk()  # assume we're good for now... but see above!
+        resp.app_iter = reiterate(response_iter())
         resp.content_type = "application/xml"
 
         return resp
