@@ -119,7 +119,7 @@ class TestSwift3Middleware(Swift3TestCase):
             with patch('swift3.request.Request._validate_headers'), \
                     patch('swift3.request.Request._validate_dates'):
                 req = S3Request(env)
-            return req.environ['swift3.auth_details']['string_to_sign']
+            return req.environ['s3api.auth_details']['string_to_sign']
 
         def verify(hash, path, headers):
             s = canonical_string(path, headers)
@@ -425,7 +425,7 @@ class TestSwift3Middleware(Swift3TestCase):
         with mock.patch('swift3.request.Request.check_signature') as mock_cs:
             status, headers, body = self.call_swift3(req)
         _, _, headers = self.swift.calls_with_headers[-1]
-        self.assertEqual(req.environ['swift3.auth_details'], {
+        self.assertEqual(req.environ['s3api.auth_details'], {
             'access_key': 'test:tester',
             'signature': 'hmac',
             'string_to_sign': '\n'.join([

@@ -230,7 +230,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
 
     def test_authorized(self):
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -246,7 +246,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
                                 json=resp)
 
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -256,7 +256,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
 
     def test_authorized_bytes(self):
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': b'access',
             'signature': b'signature',
             'string_to_sign': b'token',
@@ -277,7 +277,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
                                      'auth_host': host,
                                      'auth_port': port})(self.app))
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -299,7 +299,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
                                      'auth_port': port,
                                      'auth_version': '3'})(self.app))
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -311,7 +311,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
         self.middleware = s3_token.filter_factory({
             'auth_uri': self.TEST_AUTH_URI + '/'})(self.app)
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -321,7 +321,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
 
     def test_authorization_nova_toconnect(self):
         req = Request.blank('/v1/AUTH_swiftint/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access:FORCED_TENANT_ID',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -340,7 +340,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
             'text': text_return_value})
 
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -436,7 +436,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
             'text': json.dumps(GOOD_RESPONSE_V2)})
 
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -520,7 +520,7 @@ class S3TokenMiddlewareTestGood(S3TokenMiddlewareTestBase):
     def test_unicode_path(self):
         url = u'/v1/AUTH_cfa/c/euro\u20ac'.encode('utf8')
         req = Request.blank(urllib.parse.quote(url))
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -537,7 +537,7 @@ class S3TokenMiddlewareTestBad(S3TokenMiddlewareTestBase):
                 "title": "Unauthorized"}}
         self.requests_mock.post(self.TEST_URL, status_code=403, json=ret)
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -571,7 +571,7 @@ class S3TokenMiddlewareTestBad(S3TokenMiddlewareTestBase):
             o.side_effect = s3_invalid_resp
 
             req = Request.blank('/v1/AUTH_cfa/c/o')
-            req.environ['swift3.auth_details'] = {
+            req.environ['s3api.auth_details'] = {
                 'access_key': u'access',
                 'signature': u'signature',
                 'string_to_sign': u'token',
@@ -589,7 +589,7 @@ class S3TokenMiddlewareTestBad(S3TokenMiddlewareTestBase):
                                 text=response_body)
 
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -659,7 +659,7 @@ class S3TokenMiddlewareTestDeferredAuth(S3TokenMiddlewareTestBase):
                 "title": "Unauthorized"}}
         self.requests_mock.post(self.TEST_URL, status_code=403, json=ret)
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -683,7 +683,7 @@ class S3TokenMiddlewareTestDeferredAuth(S3TokenMiddlewareTestBase):
             o.side_effect = self.middleware._deny_request('InvalidURI')
 
             req = Request.blank('/v1/AUTH_cfa/c/o')
-            req.environ['swift3.auth_details'] = {
+            req.environ['s3api.auth_details'] = {
                 'access_key': u'access',
                 'signature': u'signature',
                 'string_to_sign': u'token',
@@ -701,7 +701,7 @@ class S3TokenMiddlewareTestDeferredAuth(S3TokenMiddlewareTestBase):
                                 text="<badreply>")
 
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -750,7 +750,7 @@ class S3TokenMiddlewareTestV3(S3TokenMiddlewareTestBase):
 
     def test_authorized(self):
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -760,7 +760,7 @@ class S3TokenMiddlewareTestV3(S3TokenMiddlewareTestBase):
 
     def test_authorized_bytes(self):
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': b'access',
             'signature': b'signature',
             'string_to_sign': b'token',
@@ -781,7 +781,7 @@ class S3TokenMiddlewareTestV3(S3TokenMiddlewareTestBase):
                                      'auth_host': host,
                                      'auth_port': port})(self.app))
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -803,7 +803,7 @@ class S3TokenMiddlewareTestV3(S3TokenMiddlewareTestBase):
                                      'auth_port': port,
                                      'auth_version': '3'})(self.app))
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -815,7 +815,7 @@ class S3TokenMiddlewareTestV3(S3TokenMiddlewareTestBase):
         self.middleware = s3_token.filter_factory({
             'auth_uri': self.TEST_AUTH_URI + '/'})(self.app)
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -825,7 +825,7 @@ class S3TokenMiddlewareTestV3(S3TokenMiddlewareTestBase):
 
     def test_authorization_nova_toconnect(self):
         req = Request.blank('/v1/AUTH_swiftint/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access:FORCED_TENANT_ID',
             'signature': u'signature',
             'string_to_sign': u'token',
@@ -844,7 +844,7 @@ class S3TokenMiddlewareTestV3(S3TokenMiddlewareTestBase):
                                 text=json.dumps(resp))
 
         req = Request.blank('/v1/AUTH_cfa/c/o')
-        req.environ['swift3.auth_details'] = {
+        req.environ['s3api.auth_details'] = {
             'access_key': u'access',
             'signature': u'signature',
             'string_to_sign': u'token',
